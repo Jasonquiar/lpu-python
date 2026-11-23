@@ -28,9 +28,17 @@ y terminado es True. Un gol más → GolRechazado. Un gol de "Equipo Verde" → 
 ¿Clase o función? Clase. Hay un estado que cambia (el marcador) y una regla que lo
 protege. Con una función y un diccionario, cualquiera podría modificar el marcador por
 fuera; con la clase, el marcador es de solo lectura y solo avanza por registrar_gol.
+No uso herencia: hay una sola entidad y nada que especializar.
+
+Límite conocido: el guion bajo es una convención, no una cerradura. Quien escriba
+partido._goles a propósito se salta la protección; la clase protege contra errores,
+no contra quien la rompe a propósito.
 
 Pendiente:
   - Tildes en los nombres ("Bogotá" vs "Bogota").
+  - Confirmar si hay regla de diferencia de 2 goles o tope (cap). Hoy el partido
+    termina cuando un equipo llega a goles_maximos, sin importar la diferencia.
+  - Retomar un partido ya empezado (marcador inicial): hoy todo partido empieza 0-0.
   - Torneo: el líder de torneo define goles_maximos para todos los partidos (otra entidad).
   - El planillero no puede jugar en el torneo donde planilla (otra entidad).
   - Ayudas de tiempo: inicio, pull de 75 s, tiempos fuera, medio tiempo (8 goles o 45 min)
@@ -41,45 +49,128 @@ Pendiente:
 """
 
 
-class OperacionRechazada(Exception):
-    """Rechazo de negocio: cambia el nombre por el de tu regla."""
+class GolRechazado(Exception):
+    """Rechazo de negocio: el gol no se puede registrar en este partido."""
 
 
-class Recurso:  # cambia el nombre: Reserva, Pedido, Turno, Producto…
-    def __init__(self, nombre, cantidad):
-        self.nombre = nombre
-        self.cantidad = cantidad  # pasa por el setter: la regla se aplica desde el inicio
+def normalizar(nombre):
+    # 📝 Clave para COMPARAR nombres: sin espacios al borde y en minúsculas.
+    #    " Equipo Rojo " → "equipo rojo". Solo se usa para comparar, no para mostrar.
+    return nombre.strip().lower()
+
+
+def validar_nombre(nombre):
+    # 📝 DATO inválido → ValueError: algo que no es texto, o texto vacío ("", "   ").
+    if not isinstance(nombre, str) or not nombre.strip():
+        raise ValueError(f"Nombre de equipo inválido: {nombre!r}")
+    return nombre.strip()
+
+
+class Partido:
+    def __init__(self, equipo_a, equipo_b, goles_maximos=15):
+        # 📝 Primero se validan los DATOS. Si algo falla, el partido ni siquiera se crea.
+        self._equipo_a = validar_nombre(equipo_a)
+        self._equipo_b = validar_nombre(equipo_b)
+        if normalizar(self._equipo_a) == normalizar(self._equipo_b):
+            # 📝 ❌ "Equipo Rojo" vs " equipo rojo " → es el mismo equipo.
+            raise ValueError(f"Un equipo no puede jugar contra sí mismo: {self._equipo_a}")
+        if not isinstance(goles_maximos, int) or goles_maximos <= 0:
+            raise ValueError(f"goles_maximos inválido: {goles_maximos!r}. Debe ser un entero positivo")
+        self._goles_maximos = goles_maximos
+        # 📝 El marcador: un diccionario con la clave NORMALIZADA de cada equipo.
+        #    Siempre empieza 0-0; solo registrar_gol lo cambia.
+        self._goles = {normalizar(self._equipo_a): 0, normalizar(self._equipo_b): 0}
+
+    # 📝 Todas las properties son SOLO LECTURA (no tienen setter).
+    #    partido.marcador = (0, 0) → AttributeError. Así no hay hueco como en
+    #    inventario_hueco.py: no existe otra forma "normal" de cambiar el marcador.
+    @property
+    def equipo_a(self):
+        return self._equipo_a
 
     @property
-    def cantidad(self):
-        return self._cantidad
+    def equipo_b(self):
+        return self._equipo_b
 
-    @cantidad.setter
-    def cantidad(self, valor):
-        if valor < 0:  # REGLA: cámbiala por la tuya
-            raise OperacionRechazada(f"Cantidad inválida: {valor}")
-        self._cantidad = valor
+    @property
+    def goles_maximos(self):
+        return self._goles_maximos
 
-    def operar(self, valor):  # cambia el nombre por tu operación
-        if valor <= 0:
-            raise ValueError(f"Dato inválido: {valor}")
-        self.cantidad -= valor  # si rompe la regla, el setter lo rechaza
-        return self.cantidad
+    @property
+    def marcador(self):
+        # 📝 Devuelve una TUPLA (goles_a, goles_b). Una tupla no se puede modificar,
+        #    así que quien la recibe no puede cambiar el marcador por esa vía.
+        return (self._goles[normalizar(self._equipo_a)], self._goles[normalizar(self._equipo_b)])
+
+    @property
+    def terminado(self):
+        # 📝 Se CALCULA cada vez a partir del marcador, no se guarda.
+        #    Así nunca puede quedar "15-10 pero terminado = False".
+        return max(self.marcador) >= self._goles_maximos
+
+    def registrar_gol(self, equipo):
+        # 📝 👮 Aquí vive la regla. Es la ÚNICA forma de cambiar el marcador.
+        #    Orden: 1) el DATO, 2) ¿el equipo juega?, 3) ¿el partido sigue abierto?
+        nombre = validar_nombre(equipo)  # ❌ "" → ValueError (dato inválido)
+        clave = normalizar(nombre)
+        if clave not in self._goles:
+            # ❌ "Equipo Verde" en Rojo vs Azul → regla de negocio
+            raise GolRechazado(f"{nombre} no juega este partido ({self._equipo_a} vs {self._equipo_b})")
+        if self.terminado:
+            # ❌ 15-10 con goles_maximos 15 → regla de negocio
+            raise GolRechazado(f"El partido ya terminó: {self}")
+        self._goles[clave] += 1  # ✅ pasó todos los controles: suma 1
+        return self.marcador
 
     def __repr__(self):
-        return f"Recurso({self.nombre!r}, cantidad={self.cantidad})"
+        a, b = self.marcador
+        return (
+            f"Partido({self._equipo_a!r} {a}-{b} {self._equipo_b!r}, "
+            f"goles_maximos={self._goles_maximos}, terminado={self.terminado})"
+        )
 
     def __str__(self):
-        return f"{self.nombre}: {self.cantidad}"
+        a, b = self.marcador
+        estado = "terminado" if self.terminado else "en juego"
+        return f"{self._equipo_a} {a} - {b} {self._equipo_b} ({estado})"
 
 
 if __name__ == "__main__":
-    recurso = Recurso("Ejemplo", 5)
+    partido = Partido("Equipo Rojo", "Equipo Azul")  # goles_maximos = 15 por defecto
 
-    # Dos casos: uno que se acepta y uno que se rechaza. Escribe antes qué esperas.
-    for valor in [3, 10]:
+    # 📝 Para llegar a 14-10 se usa la vía válida: 24 goles con registrar_gol.
+    for _ in range(14):
+        partido.registrar_gol("Equipo Rojo")
+    for _ in range(10):
+        partido.registrar_gol("Equipo Azul")
+    print("Antes:", partido)
+    # Espero: Antes: Equipo Rojo 14 - 10 Equipo Azul (en juego)
+
+    # Casos de registrar_gol. Escribí ANTES qué espero de cada uno.
+    # Espero:
+    #   ACEPTADO  Equipo Rojo -> Equipo Rojo 15 - 10 Equipo Azul (terminado)
+    #   RECHAZADO Equipo Azul -> El partido ya terminó: Equipo Rojo 15 - 10 Equipo Azul (terminado)
+    #   RECHAZADO Equipo Verde -> Equipo Verde no juega este partido (Equipo Rojo vs Equipo Azul)
+    for equipo in ["Equipo Rojo", "Equipo Azul", "Equipo Verde"]:
         try:
-            print("ACEPTADO ", valor, "->", recurso.operar(valor))
-        except OperacionRechazada as error:
-            print("RECHAZADO", valor, "->", error)
-    print(recurso)
+            partido.registrar_gol(equipo)
+            print("ACEPTADO ", equipo, "->", partido)
+        except GolRechazado as error:
+            print("RECHAZADO", equipo, "->", error)
+
+    # Caso de dato inválido: el mismo equipo con otras mayúsculas y espacios.
+    # Espero: DATO INVÁLIDO -> Un equipo no puede jugar contra sí mismo: Equipo Rojo
+    try:
+        Partido("Equipo Rojo", " equipo rojo ")
+    except ValueError as error:
+        print("DATO INVÁLIDO ->", error)
+
+    # Simulacro de la revisión: "intenta saltarte la regla asignando el atributo".
+    # Espero: un AttributeError, porque marcador no tiene setter.
+    try:
+        partido.marcador = (0, 0)
+    except AttributeError as error:
+        print("NO SE PUEDE ->", error)
+
+    print(repr(partido))
+    # Espero: Partido('Equipo Rojo' 15-10 'Equipo Azul', goles_maximos=15, terminado=True)
